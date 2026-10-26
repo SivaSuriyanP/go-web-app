@@ -21,11 +21,10 @@ module "eks" {
 
   eks_managed_node_groups = {
     default = {
-      instance_types = ["t3.micro"]
-
-      min_size     = 1
-      max_size     = 2
-      desired_size = 1
+      instance_types = ["t8i.small"]
+      min_size     = 2
+      max_size     = 4
+      desired_size = 3
     }
   }
 }
