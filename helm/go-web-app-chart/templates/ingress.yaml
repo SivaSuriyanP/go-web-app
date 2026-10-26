@@ -8,9 +8,8 @@ metadata:
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   rules:
-  - host: go-web-app.local
-    http:
-      paths: 
+  - http:
+      paths:
       - path: /
         pathType: Prefix
         backend:
