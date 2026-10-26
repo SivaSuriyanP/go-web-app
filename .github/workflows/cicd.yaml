@@ -21,10 +21,15 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up Go 1.22
-      uses: actions/setup-go@v2
+    - name: Set up Go
+      uses: actions/setup-go@v5
       with:
-        go-version: 1.22
+        go-version: '1.22'
+
+    - name: Run golangci-lint
+      uses: golangci/golangci-lint-action@v8
+      with:
+        version: latest
 
     - name: Build
       run: go build -o go-web-app
@@ -87,8 +92,8 @@ jobs:
 
     - name: Commit and push changes
       run: |
-        git config --global user.email "abhishek@gmail.com"
-        git config --global user.name "Abhishek Veeramalla"
+        git config --global user.email "sivasuriyan247@gmail.com"
+        git config --global user.name "SivaSuriyanP"
         git add helm/go-web-app-chart/values.yaml
         git commit -m "Update tag in Helm chart"
         git push

@@ -15,10 +15,13 @@ module "eks" {
   ]
 
   enable_cluster_creator_admin_permissions = true
+  enable_irsa = false
+  cluster_endpoint_private_access = true
+  cluster_endpoint_public_access  = true
 
   eks_managed_node_groups = {
     default = {
-      instance_types = ["t3.medium"]
+      instance_types = ["t3.micro"]
 
       min_size     = 1
       max_size     = 2
