@@ -133,13 +133,27 @@ jobs:
           kubectl create namespace ${ARGOCD_NAMESPACE} \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Install ArgoCD
+      - name: Install ArgoCD CRDs
         if: github.event.inputs.action == 'apply'
         run: |
           kubectl apply \
-            -n ${ARGOCD_NAMESPACE} \
+            --server-side \
+            --force-conflicts \
             -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
+      - name: Wait For ArgoCD CRDs
+        if: github.event.inputs.action == 'apply'
+        run: |
+          kubectl wait \
+            --for=condition=Established \
+            crd/applications.argoproj.io \
+            --timeout=300s
+
+      - name: Verify ArgoCD Installation
+        if: github.event.inputs.action == 'apply'
+        run: |
+          kubectl get crds | grep argoproj.io
+          
       - name: Wait For ArgoCD Pods
         if: github.event.inputs.action == 'apply'
         run: |
