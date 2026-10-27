@@ -1,7 +1,3 @@
-variable "region" {
-  default = "ap-southeast-2"
-}
+variable "region" {}
 
-variable "cluster_name" {
-  default = "demo-cluster"
-}
+variable "cluster_name" {}
