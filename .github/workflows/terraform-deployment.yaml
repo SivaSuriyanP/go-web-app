@@ -1,0 +1,214 @@
+name: EKS Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Terraform Action"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+env:
+  AWS_REGION: ap-southeast-2
+  TF_STATE_BUCKET: go-web-app-state-bucket
+  TF_STATE_KEY: eks/terraform.tfstate
+  ARGOCD_NAMESPACE: argocd
+
+jobs:
+  infrastructure:
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: ./ekstf
+        run: |
+          terraform init \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=${TF_STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}"
+
+      - name: Terraform Validate
+        working-directory: ./ekstf
+        run: terraform validate
+
+      # ==========================================
+      # PLAN ONLY
+      # ==========================================
+
+      - name: Terraform Plan Only
+        if: github.event.inputs.action == 'plan'
+        working-directory: ./ekstf
+        run: terraform plan
+
+      # ==========================================
+      # APPLY
+      # ==========================================
+
+      - name: Terraform Plan Before Apply
+        if: github.event.inputs.action == 'apply'
+        working-directory: ./ekstf
+        run: terraform plan
+
+      - name: Terraform Apply
+        if: github.event.inputs.action == 'apply'
+        working-directory: ./ekstf
+        run: terraform apply -auto-approve
+
+      - name: Get Cluster Name
+        if: github.event.inputs.action == 'apply'
+        id: cluster
+        working-directory: ./ekstf
+        run: |
+          echo "cluster_name=$(terraform output -raw cluster_name)" >> $GITHUB_OUTPUT
+
+      - name: Configure kubectl
+        if: github.event.inputs.action == 'apply'
+        run: |
+          aws eks update-kubeconfig \
+            --region ${AWS_REGION} \
+            --name "${{ steps.cluster.outputs.cluster_name }}"
+
+      - name: Wait For Worker Nodes
+        if: github.event.inputs.action == 'apply'
+        run: |
+          kubectl wait \
+            --for=condition=Ready nodes \
+            --all \
+            --timeout=900s
+
+      # ==========================================
+      # INSTALL NGINX INGRESS
+      # ==========================================
+
+      - name: Install NGINX Ingress Controller
+        if: github.event.inputs.action == 'apply'
+        run: |
+          kubectl apply -f \
+          https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.1/deploy/static/provider/aws/deploy.yaml
+
+      - name: Wait For NGINX Controller
+        if: github.event.inputs.action == 'apply'
+        run: |
+          kubectl rollout status deployment/ingress-nginx-controller \
+            -n ingress-nginx \
+            --timeout=900s
+
+      - name: Show NGINX Service
+        if: github.event.inputs.action == 'apply'
+        run: |
+          kubectl get svc -n ingress-nginx
+
+      # ==========================================
+      # INSTALL ARGO CD
+      # ==========================================
+
+      - name: Create ArgoCD Namespace
+        if: github.event.inputs.action == 'apply'
+        run: |
+          kubectl create namespace ${ARGOCD_NAMESPACE} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Install ArgoCD
+        if: github.event.inputs.action == 'apply'
+        run: |
+          kubectl apply \
+            -n ${ARGOCD_NAMESPACE} \
+            -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+      - name: Wait For ArgoCD Pods
+        if: github.event.inputs.action == 'apply'
+        run: |
+          kubectl wait \
+            --for=condition=Ready pod \
+            --all \
+            -n ${ARGOCD_NAMESPACE} \
+            --timeout=900s
+
+      - name: Expose ArgoCD UI
+        if: github.event.inputs.action == 'apply'
+        run: |
+          kubectl patch svc argocd-server \
+            -n ${ARGOCD_NAMESPACE} \
+            -p '{"spec":{"type":"LoadBalancer"}}'
+
+      - name: Show ArgoCD Endpoint
+        if: github.event.inputs.action == 'apply'
+        run: |
+          kubectl get svc argocd-server -n ${ARGOCD_NAMESPACE}
+
+      - name: Get Initial ArgoCD Password
+        if: github.event.inputs.action == 'apply'
+        run: |
+          kubectl -n ${ARGOCD_NAMESPACE} get secret argocd-initial-admin-secret \
+            -o jsonpath="{.data.password}" | base64 -d
+
+      # ==========================================
+      # DESTROY
+      # ==========================================
+
+      - name: Get Cluster Name For Cleanup
+        if: github.event.inputs.action == 'destroy'
+        id: cluster_destroy
+        working-directory: ./ekstf
+        continue-on-error: true
+        run: |
+          echo "cluster_name=$(terraform output -raw cluster_name)" >> $GITHUB_OUTPUT
+
+      - name: Configure kubectl For Cleanup
+        if: github.event.inputs.action == 'destroy'
+        continue-on-error: true
+        run: |
+          aws eks update-kubeconfig \
+            --region ${AWS_REGION} \
+            --name "${{ steps.cluster_destroy.outputs.cluster_name }}"
+
+      - name: Delete ArgoCD
+        if: github.event.inputs.action == 'destroy'
+        continue-on-error: true
+        run: |
+          kubectl delete namespace ${ARGOCD_NAMESPACE} \
+            --ignore-not-found=true
+
+      - name: Delete NGINX Ingress Controller
+        if: github.event.inputs.action == 'destroy'
+        continue-on-error: true
+        run: |
+          kubectl delete -f \
+          https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.1/deploy/static/provider/aws/deploy.yaml \
+          --ignore-not-found=true
+
+      - name: Wait For LoadBalancer Cleanup
+        if: github.event.inputs.action == 'destroy'
+        continue-on-error: true
+        run: |
+          sleep 180
+
+      - name: Terraform Destroy
+        if: github.event.inputs.action == 'destroy'
+        working-directory: ./ekstf
+        run: terraform destroy -auto-approve
